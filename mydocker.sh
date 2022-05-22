@@ -1,4 +1,30 @@
+#!/bin/bash
+
 create() {
+    #Task 3: 创建判断是否创建网桥
+    #$1容器名
+    if ! [ -a "$CONFIG" ]; then
+        touch $CONFIG
+        chmod -R 777 $CONFIG
+        echo "BRIDGE_NAME=$BRIDGE_NAME" >> $CONFIG
+        echo "BRIDGE_IP=$BRIDGE_IP" >> $CONFIG
+        echo "NET_INTER=$NET_INTER" >> $CONFIG
+        echo "CONTAINER_IP_RANGE=$CONTAINER_IP_RANGE" >> $CONFIG
+        echo "CONTAINER_IP=$CONTAINER_IP" >> $CONFIG
+        netinit $BRIDGE_NAME $BRIDGE_IP
+    else
+        CONTAINER_IP=`sed '/^CONTAINER_IP=/!d;s/.*=//' $CONFIG`
+        let i=${CONTAINER_IP#*.*.*.}
+        i=$((i+1))
+        CONTAINER_IP=${CONTAINER_IP%.*}.$i
+        echo $CONTAINER_IP
+        sed -i '/CONTAINER_IP=/d' $CONFIG
+        echo "CONTAINER_IP=$CONTAINER_IP" >> $CONFIG
+        #BRIDGE_IP=`sed '/^BRIDGE_IP=/!d;s/.*=//' $CONFIG`
+        #echo "BRIDGE_NAME: $BRIDGE_NAME"
+        #echo "BRIDGE_IP: $BRIDGE_IP"
+        #netadd
+    fi
     # TODO: Task 2
     echo TODO
 }
@@ -47,6 +73,7 @@ remove() {
 }
 
 run() {
+    #$1 container name
     echo $$ >./proc/$1
 
     if ! [ -d "/sys/fs/cgroup/memory/$1" ]
@@ -63,13 +90,35 @@ run() {
 
     echo $$ >>"/sys/fs/cgroup/cpu/$1/tasks"
 
-    # TODO: Task 3
-
+    #Task 3 创建命名空间，虚拟网卡挂载网桥，分配IP，开启nat
+    sudo ip netns add $1
+    sudo ip link add $10 type veth peer name $11
+    sudo ip link set $11 netns $1
+    sudo brctl addif $BRIDGE_NAME $10
+    sudo ip link set $10 up
+    sudo ip netns exec $1 ifconfig $11 $CONTAINER_IP up
+    sudo ip netns exec $1 route add default dev $11
+    
     unshare --pid --mount-proc --ipc --uts --mount --net --user --map-root-user --root ./mnt/$1 --fork /bin/sh
 
-    # TODO: Task 3
+    sudo ip netns del $1
+    sudo brctl delif $BRIDGE_NAME $10
+    sudo ip link delete $10
+    
 
     unlink ./proc/$1
+}
+
+netinit() {
+    sudo brctl addbr $1
+    sudo ifconfig $1 $2
+    sudo ifconfig $1 up
+    sudo route add default dev $NET_INTER
+    sudo route add -net $CONTAINER_IP_RANGE dev $1
+    #sudo brctl addif $1 $NET_INTER
+    sudo sysctl net.ipv4.conf.all.forwarding=1
+    sudo iptables -t nat -A POSTROUTING -s $CONTAINER_IP_RANGE ! -o $BRIDGE_NAME -j MASQUERADE
+    #sudo route add default dev $NET_INTER
 }
 
 usage() {
@@ -83,6 +132,13 @@ usage() {
 }
 
 flag=0
+CONFIG=./config.txt
+BRIDGE_NAME=mydocker
+BRIDGE_IP=192.168.11.1
+NET_INTER=ens33
+CONTAINER_IP_RANGE=192.168.11.0/24
+CONTAINER_IP=192.168.11.2
+
 
 if [ ! $1 ]
 then
@@ -195,6 +251,8 @@ then             # $3-容器名 $4-镜像名
 
     # 执行任务2
     create $3 $4
+    #debug
+    run $3
 
 elif [ $flag = 2 ]
 then              # $3-容器名
